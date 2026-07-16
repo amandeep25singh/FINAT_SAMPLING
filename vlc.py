@@ -1,8 +1,52 @@
+import streamlit as st
 import pandas as pd
 import math
 import os
 import shutil
+import re
+import tempfile
+import base64
+from datetime import datetime
 
+# ==========================================
+# UI Styling & Images
+# ==========================================
+st.set_page_config(page_title="Sampling of Monthly Vouchers-FINAT", layout="wide")
+
+def get_base64_of_bin_file(bin_file):
+    with open(bin_file, 'rb') as f:
+        data = f.read()
+    return base64.b64encode(data).decode()
+
+# Load background image if it exists in the GitHub repo
+if os.path.exists('bg.png'):
+    bg_base64 = get_base64_of_bin_file('bg.png')
+    st.markdown(
+        f'''
+        <style>
+        .stApp {{
+            background-image: url("data:image/png;base64,{bg_base64}");
+            background-size: cover;
+            background-repeat: no-repeat;
+            background-attachment: fixed;
+        }}
+        </style>
+        ''',
+        unsafe_allow_html=True
+    )
+
+# Load logo if it exists in the GitHub repo
+if os.path.exists('logo.png'):
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.image('logo.png', use_container_width=True)
+
+st.title("📊 Sampling of Monthly Vouchers-FINAT")
+st.markdown("Upload your Master Excel or CSV file to apply the sampling criteria and generate the consolidated audit workbook.")
+
+# ==========================================
+# Core Processing Logic
+# ==========================================
 def clean_string(val):
     if pd.isna(val):
         return ""
@@ -12,22 +56,48 @@ def get_bracket_and_percentage(voutype, dh_desc, amount):
     v_type = clean_string(voutype)
     desc = clean_string(dh_desc)
     
-    if "ac bill" in v_type or "dc bill" in v_type: return "AC_DC_All", 1.00 
-    elif "grant" in v_type or "grant" in desc: return "GIA_All", 1.00 
+    # Robust normalization (spaces, hyphens, underscores, NBSP)
+    v_type_norm = re.sub(r'[\s\-_]+', ' ', v_type.replace("\xa0"," ")).strip().lower()
+    desc_norm = re.sub(r'[\s\-_]+', ' ', desc.replace("\xa0"," ")).strip().lower()
+    
+    if "ac bill" in v_type or "dc bill" in v_type: 
+        return "AC_DC_All", 1.00 
+    
+    elif "grant" in v_type or "grant" in desc: 
+        return "GIA_All", 1.00 
+    
     elif "medical" in desc or "medical" in v_type:
         if amount >= 10000: return "Med_>=10k", 0.25
+            
     elif "ltc" in desc or "leave travel" in desc or "ltc" in v_type:
         if amount >= 25000: return "LTC_>=25k", 0.25
+            
     elif "ta bill" in v_type or "ta voucher" in v_type or "travel" in desc:
         if amount >= 15000: return "TA_>=15k", 0.25
+            
     elif "telephone" in desc or "mobile" in desc:
         if amount >= 5000: return "Tel_>=5k", 0.50
-    elif "establishment" in v_type or "salary" in desc:
+            
+    # Check for "Non Salary" FIRST so it doesn't get caught by the regular salary check
+    elif (
+        "non salary" in v_type_norm
+        or "nonsalary" in v_type_norm.replace(" ", "")
+        or "non salary bill" in v_type_norm
+        or "non salary" in desc_norm
+    ):
+        if amount < 100000: return "NonSal_<1L", 0.05
+        elif amount < 300000: return "NonSal_1-3L", 0.10
+        elif amount < 500000: return "NonSal_3-5L", 0.25
+        else: return "NonSal_>=5L", 1.00
+            
+    # Regular Salary / Establishment
+    elif "establishment" in v_type or "salary" in desc or "salary" in v_type:
         if amount < 500000: return "Est_<5L", 0.01
         elif amount <= 1000000: return "Est_5-10L", 0.01
         elif amount <= 1500000: return "Est_10-15L", 0.01
         else: return "Est_>15L", 0.02
-    elif "contingent" in v_type or "non salary" in v_type or "works" in desc:
+        
+    elif "contingent" in v_type or "works" in desc:
         prefix = "Works" if "works" in desc else "Cont"
         if amount < 100000: return f"{prefix}_<1L", 0.05
         elif amount < 300000: return f"{prefix}_1-3L", 0.10
@@ -41,6 +111,10 @@ BRACKET_DEFS = {
     "Est_5-10L": ("", "Rs 5 lakh to 10 lakh", 0.01),
     "Est_10-15L": ("", "Rs 10 lakh to 15 lakh", 0.01),
     "Est_>15L": ("", "Above Rs 15 lakh", 0.02),
+    "NonSal_<1L": ("Non Salary Bills", "Below Rs 1 lakh", 0.05),
+    "NonSal_1-3L": ("", "Rs 1 lakh to 3 lakh", 0.10),
+    "NonSal_3-5L": ("", "Rs 3 lakh to 5 lakh", 0.25),
+    "NonSal_>=5L": ("", "Rs 5 lakh and above", 1.00),
     "Med_>=10k": ("Medical Bills", "Rs 10,000 and above", 0.25),
     "LTC_>=25k": ("Leave Travel Concession", "Rs 25,000 and above", 0.25),
     "TA_>=15k": ("Travel Expenses / TA", "Rs 15,000 and above", 0.25),
@@ -57,42 +131,26 @@ BRACKET_DEFS = {
     "GIA_All": ("Grant In Aid", "All Amounts", 1.00),
 }
 
-def process_audit_data():
-    file_path = input("Enter the full path to the Master Excel or CSV file: ").strip()
-    
-    if file_path.startswith(('"', "'")) and file_path.endswith(('"', "'")):
-        file_path = file_path[1:-1]
-        
-    if not os.path.exists(file_path):
-        print(f"Error: File not found at {file_path}")
-        return
-
-    print("Loading data...")
+def process_file(file_path):
     try:
-        try:
-            df_master = pd.read_csv(file_path)
-            is_csv = True
-            print("Successfully loaded as CSV.")
-        except Exception:
-            xls = pd.ExcelFile(file_path)
-            master_sheet = [s for s in xls.sheet_names if 'MASTER' in s.upper()]
-            master_sheet = master_sheet[0] if master_sheet else xls.sheet_names[0]
-            
-            df_raw = pd.read_excel(file_path, sheet_name=master_sheet, header=None)
-            header_row_index = 0
-            for i in range(min(150, len(df_raw))):
-                row_str = ' '.join(df_raw.iloc[i].astype(str).str.lower().fillna(''))
-                if 'amount' in row_str and ('desc' in row_str or 'dh' in row_str or 'dept' in row_str):
-                    header_row_index = i
-                    break
-            df_master = pd.read_excel(file_path, sheet_name=master_sheet, header=header_row_index)
-            is_csv = False
-            print(f"Successfully loaded Excel sheet: '{master_sheet}'.")
-            
-    except Exception as e:
-        print(f"Failed to read file. Error: {e}")
-        return
+        df_master = pd.read_csv(file_path)
+        is_csv = True
+    except Exception:
+        xls = pd.ExcelFile(file_path)
+        master_sheet = [s for s in xls.sheet_names if 'MASTER' in s.upper()]
+        master_sheet = master_sheet[0] if master_sheet else xls.sheet_names[0]
+        
+        df_raw = pd.read_excel(file_path, sheet_name=master_sheet, header=None)
+        header_row_index = 0
+        for i in range(min(150, len(df_raw))):
+            row_str = ' '.join(df_raw.iloc[i].astype(str).str.lower().fillna(''))
+            if 'amount' in row_str and ('desc' in row_str or 'dh' in row_str or 'dept' in row_str):
+                header_row_index = i
+                break
+        df_master = pd.read_excel(file_path, sheet_name=master_sheet, header=header_row_index)
+        is_csv = False
 
+    # Clean column headers
     df_master.columns = [str(c).replace('\xa0', ' ').strip().upper() for c in df_master.columns]
 
     dept_col = next((col for col in df_master.columns if 'DEPT' in col), None)
@@ -101,8 +159,7 @@ def process_audit_data():
     dh_desc_col = next((col for col in df_master.columns if 'DH DESC' in col), None)
 
     if not all([dept_col, amount_col, voutype_col, dh_desc_col]):
-        print("\nError: Could not find required columns.")
-        return
+        raise ValueError("Could not find required columns (DEPT, AMOUNT, VOUTYPE, DH DESC). Please check your file.")
 
     df_master[amount_col] = pd.to_numeric(df_master[amount_col], errors='coerce').fillna(0)
     df_master = df_master.sort_values(by=amount_col, ascending=False)
@@ -112,7 +169,6 @@ def process_audit_data():
     dept_sampled_dict = {}
     summary_counts = {bracket: {} for bracket in BRACKET_DEFS.keys()}
 
-    print("Applying sampling criteria...")
     departments = sorted(df_master[dept_col].dropna().unique()) 
 
     for dept in departments:
@@ -149,7 +205,7 @@ def process_audit_data():
             dept_sampled_dict[dept] = df_sampled_combined
             all_selected_vouchers.append(df_sampled_combined)
 
-    # --- THE FIX: Building a flat dataframe to bypass the MultiIndex error ---
+    # Building a flat dataframe to bypass the MultiIndex Excel error
     row1_header = ["Voutype / Dh Desc", "Amount involved in the voucher", "Percentage of vouchers to be checked in case of "]
     row2_header = ["", "", "Departments covered in local audit plan"]
 
@@ -173,28 +229,23 @@ def process_audit_data():
     else:
         df_all_selected = pd.DataFrame(columns=df_master.columns)
 
-    import datetime
-    timestamp = datetime.datetime.now().strftime("%H%M%S")
-    output_path = os.path.join(os.path.dirname(file_path), f"Sampled_Output_Audit_{timestamp}.xlsx")
+    # Save logic optimized for cloud/temp directories
+    timestamp = datetime.now().strftime("%H%M%S")
+    output_path = os.path.join(tempfile.gettempdir(), f"Sampled_Output_Audit_{timestamp}.xlsx")
     
     if not is_csv:
-        print(f"Creating output file and preserving original formatting...")
         shutil.copyfile(file_path, output_path)
         write_mode = 'a'
         if_exists = 'replace'
     else:
-        print(f"Original was a CSV. Creating fresh Excel output...")
         write_mode = 'w'
         if_exists = None
 
-    print(f"Writing calculated sheets to: {output_path}")
-    
     with pd.ExcelWriter(output_path, engine='openpyxl', mode=write_mode, if_sheet_exists=if_exists) as writer:
         
         if write_mode == 'w':
             df_master.to_excel(writer, sheet_name='MASTER', index=False)
 
-        # Write the matrix with header=False to strictly use our custom flat rows
         if not df_summary_matrix.empty:
             df_summary_matrix.to_excel(writer, sheet_name='Sampling Criterial', header=False, index=False)
 
@@ -210,7 +261,45 @@ def process_audit_data():
                 sampled_sheet_name = f"Sampled_{safe_name}"[:31]
                 dept_sampled_dict[dept_name].to_excel(writer, sheet_name=sampled_sheet_name, index=False)
 
-    print("Success! Audit sampling file created.")
+    return output_path
 
-if __name__ == "__main__":
-    process_audit_data()
+# ==========================================
+# Streamlit Interface
+# ==========================================
+uploaded_file = st.file_uploader("Upload Master File (CSV or Excel)", type=["csv", "xlsx"])
+
+if uploaded_file is not None:
+    st.info("File uploaded successfully. Click the button below to process.")
+    
+    if st.button("Process Audit Data", type="primary"):
+        with st.spinner("Analyzing vouchers and applying sampling criteria..."):
+            try:
+                # Save uploaded file to temp path to preserve formatting for openpyxl
+                file_extension = os.path.splitext(uploaded_file.name)[1]
+                with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp:
+                    tmp.write(uploaded_file.getvalue())
+                    tmp_input_path = tmp.name
+
+                # Process the file using the extracted logic
+                output_file_path = process_file(tmp_input_path)
+
+                # Read output file for download
+                with open(output_file_path, "rb") as f:
+                    output_bytes = f.read()
+
+                st.success("Processing complete! Summary matrix and department sheets generated.")
+                
+                # Render the Download button
+                st.download_button(
+                    label="⬇️ Download Processed Excel Workbook",
+                    data=output_bytes,
+                    file_name=f"Sampled_Output_Audit_{datetime.now().strftime('%d%m%Y_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+                # Clean up temp files from memory
+                os.remove(tmp_input_path)
+                os.remove(output_file_path)
+
+            except Exception as e:
+                st.error(f"An error occurred during processing: {str(e)}")
