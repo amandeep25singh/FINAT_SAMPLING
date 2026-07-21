@@ -37,7 +37,7 @@ if os.path.exists('bg.png'):
 
 # Load logo if it exists in the GitHub repo
 if os.path.exists('logo.png'):
-    col1, col2, col3 = st.columns([1, 2, 1])
+    col1, col2, col3 = st.columns([17, 6, 17])
     with col2:
         st.image('logo.png', use_container_width=True)
 
