@@ -266,7 +266,11 @@ def process_file(file_path):
 # ==========================================
 # Streamlit Interface
 # ==========================================
-uploaded_file = st.file_uploader("Upload Master File (CSV or Excel)", type=["csv", "xlsx"])
+
+# Use columns to restrict the width of the upload bar, making it small and compact
+upload_col, empty_col = st.columns([1, 4]) 
+with upload_col:
+    uploaded_file = st.file_uploader("Upload Master File", type=["csv", "xlsx"])
 
 if uploaded_file is not None:
     st.info("File uploaded successfully. Click the button below to process.")
