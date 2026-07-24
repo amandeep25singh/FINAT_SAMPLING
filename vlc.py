@@ -35,11 +35,26 @@ if os.path.exists('bg.png'):
         unsafe_allow_html=True
     )
 
-# Load logo if it exists in the GitHub repo
+# Load logo if it exists and place it on the left margin with blur/opacity
 if os.path.exists('logo.png'):
-    col1, col2, col3 = st.columns([17, 6, 17])
-    with col2:
-        st.image('logo.png', use_container_width=True)
+    logo_base64 = get_base64_of_bin_file('logo.png')
+    st.markdown(
+        f'''
+        <style>
+        .margin-logo {{
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            width: 150px;        /* Adjust the size of your logo here */
+            opacity: 0.5;        /* Makes it translucent so the background shows */
+            filter: blur(1.5px); /* Adds a slight blur effect */
+            z-index: 999;        /* Ensures it sits above other background elements */
+        }}
+        </style>
+        <img src="data:image/png;base64,{logo_base64}" class="margin-logo">
+        ''',
+        unsafe_allow_html=True
+    )
 
 st.title("📊 Sampling of Monthly Vouchers-FINAT")
 st.markdown("Upload your Master Excel or CSV file to apply the sampling criteria and generate the consolidated audit workbook.")
