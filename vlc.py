@@ -35,7 +35,7 @@ if os.path.exists('bg.png'):
         unsafe_allow_html=True
     )
 
-# Load logo if it exists and place it on the left margin with adjusted blur/opacity
+# Load logo if it exists and place it on the left margin, pushing content right to prevent overlap
 if os.path.exists('logo.png'):
     logo_base64 = get_base64_of_bin_file('logo.png')
     st.markdown(
@@ -43,12 +43,17 @@ if os.path.exists('logo.png'):
         <style>
         .margin-logo {{
             position: fixed;
-            top: 80px;           /* Increased from 20px to move it further down */
+            top: 80px;           
             left: 20px;
-            width: 150px;        /* Adjust the size of your logo here */
-            opacity: 0.6;        /* Slightly more opaque so it doesn't wash out completely */
-            filter: blur(0.5px); /* Reduced blur to make it clearer */
-            z-index: 999;        /* Ensures it sits above other background elements */
+            width: 150px;        
+            opacity: 0.6;        
+            filter: blur(0.5px); 
+            z-index: 999;        
+        }}
+        
+        /* This pushes the main content to the right so it doesn't flow under the logo */
+        .block-container {{
+            padding-left: 200px !important; 
         }}
         </style>
         <img src="data:image/png;base64,{logo_base64}" class="margin-logo">
